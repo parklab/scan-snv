@@ -67,11 +67,11 @@ rule gatk_scatter:
             "-L " + config['gatk_regions'][int(wildcards.gatk_chunk) - 1],
         mmq="{gatk_mmq}"
     resources:
-        mem=5000
+        mem=12000
     benchmark:
         "gatk/scatter_benchmark.mmq{gatk_mmq}_chunk{gatk_chunk}.tsv"
     shell:
-        "gatk -Xmx4G -Xms4G "
+        "gatk -Xmx10G -Xms10G "
         "    -T HaplotypeCaller"
         "    -R {config[humref]}"
         "    --dontUseSoftClippedBases -l INFO"
@@ -84,13 +84,15 @@ rule gatk_scatter:
 
 
 
-rule shapeit_gather:
+rule phasing_gather:
     input:
-        expand("shapeit/chr{chr}/phased_hsnps.vcf", chr=config['chrs'])
+        expand("{phaser}/{chr}/phased_hsnps.vcf",
+            phaser=config['phaser'], chr=config['chrs'])
     output:
-        vcf="shapeit/phased_hsnps.vcf"
+        vcf=config['phaser'] + "/phased_hsnps.vcf"
     params:
-        vcfs=' '.join(expand("-V shapeit/chr{chr}/phased_hsnps.vcf", chr=config['chrs']))
+        vcfs=' '.join(expand("-V {phaser}/{chr}/phased_hsnps.vcf",
+            phaser=config['phaser'], chr=config['chrs']))
     resources:
         mem=4000
     shell:
@@ -105,16 +107,16 @@ rule shapeit_gather:
 
 rule shapeit_scatter:
     input:
-        "shapeit/chr{chr}/hc_raw.mmq60.chr{chr}.vcf"
+        "shapeit/{chr}/hc_raw.mmq60.{chr}.vcf"
     output:
-        "shapeit/chr{chr}/phased_hsnps.vcf"
+        "shapeit/{chr}/phased_hsnps.vcf"
     params:
-        excludefile="shapeit/chr{chr}/shapeit_check.snp.strand.exclude",
-        tmpout="shapeit/chr{chr}/chr{chr}.phased",
-        tmpout2="shapeit/chr{chr}/phased.vcf",
-        checklog="shapeit/chr{chr}/shapeit_check.log",
-        phaselog="shapeit/chr{chr}/shapeit_phase.log",
-        convertlog="shapeit/chr{chr}/shapeit_convert.log",
+        excludefile="shapeit/{chr}/shapeit_check.snp.strand.exclude",
+        tmpout="shapeit/{chr}/{chr}.phased",
+        tmpout2="shapeit/{chr}/phased.vcf",
+        checklog="shapeit/{chr}/shapeit_check.log",
+        phaselog="shapeit/{chr}/shapeit_phase.log",
+        convertlog="shapeit/{chr}/shapeit_convert.log",
         gmap="genetic_map_chr{chr}",
         hap="1000GP_Phase3_chr{chr}",
         leg="1000GP_Phase3_chr{chr}",
@@ -122,7 +124,7 @@ rule shapeit_scatter:
         extra_x=lambda wildcards: '_NONPAR' if wildcards.chr == 'X' else '',
         xflag=lambda wildcards: '--chrX' if wildcards.chr == 'X' else ''
     benchmark:
-        "shapeit/chr{chr}/benchmark.tsv"
+        "shapeit/{chr}/benchmark.tsv"
     resources:
         mem=4000
     shell:
@@ -152,14 +154,42 @@ rule shapeit_scatter:
         "    --input-haps {params.tmpout} --output-vcf {params.tmpout2} ; "
         "awk '$10 == \"1|0\" || $10 == \"0|1\" || $1 ~ /^#/' {params.tmpout2}"
         "    | sed -e\"s/{config[bulk_sample]}/phasedgt/g\" > {output}"
-    
+ 
 
 
-rule shapeit_prepare:
+rule eagle_scatter:
+    input:
+        "eagle/{chr}/hc_raw.mmq60.{chr}.vcf.gz"
+    output:
+        "eagle/{chr}/phased_hsnps.vcf"
+    params:
+        tmpout="eagle/{chr}/phased_hsnps_tmp.vcf",
+        zippedinput="eagle/{chr}/hc_raw.mmq60.{chr}.vcf.gz",
+        refbcf=lambda wildcards:
+            config['eagle_refpanel'][wildcards.chr],
+        outprefix="eagle/{chr}/phased_hsnps_tmp"
+    benchmark:
+        "eagle/{chr}/benchmark.tsv"
+    resources:
+        mem=8000
+    shell:
+        """
+        eagle --vcfTarget {params.zippedinput} \
+            --vcfRef {params.refbcf} \
+            --geneticMapFile {config[eagle_genmap]} \
+            --vcfOutFormat v \
+            --outPrefix {params.outprefix} ;
+        awk '$10 ~ /^1\|0/ || $10 ~ /^0\|1/ || $1 ~ /^#/' {params.tmpout} \
+            | sed -e\"s/{config[bulk_sample]}/phasedgt/g\" > {output}
+        """
+
+
+rule phasing_prepare:
     input:
         "gatk/hc_raw.mmq60.vcf"
     output:
-        "shapeit/chr{chr}/hc_raw.mmq60.chr{chr}.vcf"
+        out=config['phaser'] + "/{chr}/hc_raw.mmq60.{chr}.vcf",
+        gzout=config['phaser'] + "/{chr}/hc_raw.mmq60.{chr}.vcf.gz"
     params:
         chr="{chr}"
     resources:
@@ -174,14 +204,16 @@ rule shapeit_prepare:
         "    -restrictAllelesTo BIALLELIC"
         "    -env -trimAlternates"
         "    -L {params.chr}"
-        "    -o {output}"
+        "    -o {output.out} ; "
+        "bgzip -c {output.out} > {output.gzout} ; "
+        "tabix {output.gzout}"
 
 
 
 rule training_hsnps_helper:
     input:
         joint_vcf="gatk/hc_raw.mmq60.vcf",
-        phased_vcf="shapeit/phased_hsnps.vcf"
+        phased_vcf=config['phaser'] + "/phased_hsnps.vcf"
     output:
         tab="ab_model/{sample}/hsnps.tab",
         combined_vcf="ab_model/{sample}/hsnps.vcf",
@@ -235,7 +267,7 @@ rule training_hsnps:
 rule abmodel_fit:
     input:
         lambda wildcards: 
-            expand("ab_model/{sample}/chr{chr}/fit_step{abmodel_steps}.rda",
+            expand("ab_model/{sample}/{chr}/fit_step{abmodel_steps}.rda",
                 sample=wildcards.sample, chr=config['chrs'],
                 abmodel_steps=config['abmodel_steps'])
     output:
@@ -261,14 +293,14 @@ rule abmodel_fit:
 rule abmodel_gather_by_chrom:
     input:
         lambda wildcards:
-            expand("ab_model/{sample}/chr{chr}/logp_samples_step{abmodel_step}.{abmodel_chunk}.rda",
+            expand("ab_model/{sample}/{chr}/logp_samples_step{abmodel_step}.{abmodel_chunk}.rda",
                 sample=wildcards.sample,
                 chr=wildcards.chr,
                 abmodel_step=wildcards.abmodel_step,
                 abmodel_chunk=range(1, config["abmodel_chunks"]+1))
     output:
-        fit="ab_model/{sample}/chr{chr}/fit_step{abmodel_step}.rda",
-        range="ab_model/{sample}/chr{chr}/param_ranges_step{abmodel_step}.rda"
+        fit="ab_model/{sample}/{chr}/fit_step{abmodel_step}.rda",
+        range="ab_model/{sample}/{chr}/param_ranges_step{abmodel_step}.rda"
     params:
         infiles=lambda wildcards, input:
             "c(" + ', '.join("'" + f + "'" for f in input) + ")",
@@ -314,7 +346,7 @@ def abmodel_scatter_input(wildcards):
     d = dict()
     d['training'] = "ab_model/{sample}/training.rda",
     if int(wildcards.abmodel_step) > 1:
-         prf = expand("ab_model/{sample}/chr{chr}/param_ranges_step{abmodel_prev_step}.rda",
+         prf = expand("ab_model/{sample}/{chr}/param_ranges_step{abmodel_prev_step}.rda",
                 sample=wildcards.sample,
                 chr=wildcards.chr,
                 abmodel_prev_step=int(wildcards.abmodel_step) - 1)
@@ -325,7 +357,7 @@ rule abmodel_scatter:
     input:
         unpack(abmodel_scatter_input)  
     output:
-        "ab_model/{sample}/chr{chr}/logp_samples_step{abmodel_step}.{abmodel_chunk}.rda"
+        "ab_model/{sample}/{chr}/logp_samples_step{abmodel_step}.{abmodel_chunk}.rda"
     params:
         chr="{chr}",
         seed="{abmodel_chunk}",
@@ -333,7 +365,7 @@ rule abmodel_scatter:
         paramfile=lambda wildcards, input: \
             input.param_ranges if wildcards.abmodel_step != '1' else ''
     benchmark:
-        "ab_model/{sample}/chr{chr}/benchmark_step{abmodel_step}.{abmodel_chunk}.tsv"
+        "ab_model/{sample}/{chr}/benchmark_step{abmodel_step}.{abmodel_chunk}.tsv"
     resources:
         mem=1000
     run:
@@ -389,7 +421,7 @@ rule scansnv_vcftotab:
 
 rule scansnv_sample_hsnps:
     input:
-        "shapeit/phased_hsnps.vcf"
+        config['phaser'] + "/phased_hsnps.vcf"
     output:
         "scansnv/hsnp_spikein_positions.rda"
     resources:
@@ -409,7 +441,7 @@ rule scansnv_sample_hsnps_scatter:
     input:
         "scansnv/hsnp_spikein_positions.rda"
     output:
-        "scansnv/hsnp_spikein_positions.chr{chr}.tab"
+        "scansnv/hsnp_spikein_positions.{chr}.tab"
     params:
         chr="{chr}"
     resources:
@@ -428,7 +460,7 @@ rule scansnv_somatic_sites:
     input:
         "scansnv/mmq60.tab"
     output:
-        "scansnv/somatic_positions.chr{chr}.tab"
+        "scansnv/somatic_positions.{chr}.tab"
     params:
         chr="{chr}"
     resources:
@@ -468,11 +500,11 @@ rule scansnv_somatic_sites:
 
 rule scansnv_count_cigars:
     input:
-        sites="scansnv/{vartype}_positions.chr{chr}.tab",
+        sites="scansnv/{vartype}_positions.{chr}.tab",
         bam=lambda wildcards: config['bams'][wildcards.sample]
     output:
-        txt="scansnv/{sample}/{vartype}_cigars.chr{chr}.txt",
-        tab="scansnv/{sample}/{vartype}_cigars.chr{chr}.tab"
+        txt="scansnv/{sample}/{vartype}_cigars.{chr}.txt",
+        tab="scansnv/{sample}/{vartype}_cigars.{chr}.tab"
     resources:
         mem=1000
     shell:
@@ -483,11 +515,11 @@ rule scansnv_count_cigars:
 
 rule scansnv_count_bulk_cigars:
     input:
-        sites="scansnv/{vartype}_positions.chr{chr}.tab",
+        sites="scansnv/{vartype}_positions.{chr}.tab",
         bam=config['bams'][config['bulk_sample']]
     output:
-        txt="scansnv/{vartype}_bulk_cigars.chr{chr}.txt",
-        tab="scansnv/{vartype}_bulk_cigars.chr{chr}.tab"
+        txt="scansnv/{vartype}_bulk_cigars.{chr}.txt",
+        tab="scansnv/{vartype}_bulk_cigars.{chr}.tab"
     resources:
         mem=1000
     shell:
@@ -499,7 +531,7 @@ rule scansnv_count_bulk_cigars:
 rule scansnv_cigar_gather:
     input:
         lambda wildcards:
-            expand("scansnv/{sample}/{vartype}_cigars.chr{chr}.tab",
+            expand("scansnv/{sample}/{vartype}_cigars.{chr}.tab",
                 sample=wildcards.sample, vartype=wildcards.vartype, chr=config['chrs'])
     output:
         "scansnv/{sample}/{vartype}_cigars.tab"
@@ -522,7 +554,7 @@ rule scansnv_cigar_gather:
 rule scansnv_bulk_cigar_gather:
     input:
         lambda wildcards:
-            expand("scansnv/{vartype}_bulk_cigars.chr{chr}.tab",
+            expand("scansnv/{vartype}_bulk_cigars.{chr}.tab",
                 vartype=wildcards.vartype, chr=config['chrs'])
     output:
         "scansnv/{vartype}_bulk_cigars.tab"
@@ -546,16 +578,16 @@ rule scansnv_estimate_ab_scatter:
     input:
         fits="ab_model/{sample}/fits.rda",
         training="ab_model/{sample}/training.rda",
-        sites="scansnv/{type}_positions.chr{chr}.tab"
+        sites="scansnv/{type}_positions.{chr}.tab"
     output:
-        "scansnv/{sample}/{type}_ab.chr{chr}.rda"
+        "scansnv/{sample}/{type}_ab.{chr}.rda"
     params:
         flag=lambda wildcards:
             "somatic" if wildcards.type == 'somatic' else 'hsnp_spikein'
     resources:
         mem=1000
     benchmark:
-        "scansnv/{sample}/benchmark_{type}_ab.chr{chr}.tsv"
+        "scansnv/{sample}/benchmark_{type}_ab.{chr}.tsv"
     shell:
         "{config[scripts]}/estimate_ab.R"
         "   {input.fits} {input.training} {input.sites} {params} {output}"
@@ -565,7 +597,7 @@ rule scansnv_estimate_ab_scatter:
 rule scansnv_estimate_ab_gather:
     input:
         lambda wildcards:
-            expand("scansnv/{sample}/{type}_ab.chr{chr}.rda",
+            expand("scansnv/{sample}/{type}_ab.{chr}.rda",
                 type=wildcards.type, sample=wildcards.sample, chr=config['chrs'])
     output:
         "scansnv/{sample}/{type}_ab.rda"
@@ -626,7 +658,7 @@ rule scansnv_fdr_tuning:
         mmq60="scansnv/mmq60.tab",
         mmq1="scansnv/mmq1.tab",
         hsnps="ab_model/{sample}/training.rda",
-        som_sites=expand("scansnv/somatic_positions.chr{chr}.tab", chr=config['chrs'])
+        som_sites=expand("scansnv/somatic_positions.{chr}.tab", chr=config['chrs'])
     output:
         "scansnv/{sample}/fdr_tuning.rda"
     params:
@@ -681,7 +713,7 @@ rule scansnv_fdr_tuning_spikein:
         mmq1="scansnv/mmq1.tab",
         hsnps="ab_model/{sample}/training.rda",
         spikein="scansnv/{sample}/hsnp_spikein{n}_positions.tab",
-        som_sites=expand("scansnv/somatic_positions.chr{chr}.tab", chr=config['chrs'])
+        som_sites=expand("scansnv/somatic_positions.{chr}.tab", chr=config['chrs'])
     output:
         "scansnv/{sample}/fdr_tuning_spikein{n}.rda"
     params:
@@ -704,19 +736,19 @@ rule scansnv_genotype_scatter:
     input:
         mmq60="scansnv/mmq60.tab",
         mmq1="scansnv/mmq1.tab",
-        som_ab="scansnv/{sample}/{type}_ab.chr{chr}.rda",
-        sc_cigars="scansnv/{sample}/{type}_cigars.chr{chr}.tab",
-        bulk_cigars="scansnv/{type}_bulk_cigars.chr{chr}.tab",
+        som_ab="scansnv/{sample}/{type}_ab.{chr}.rda",
+        sc_cigars="scansnv/{sample}/{type}_cigars.{chr}.tab",
+        bulk_cigars="scansnv/{type}_bulk_cigars.{chr}.tab",
         cigar_tuning="scansnv/{sample}/cigar_tuning.rda",
         fdr_tuning="scansnv/{sample}/fdr_tuning.rda",
     output:
-        "scansnv/{sample}/{type}_genotypes.chr{chr}.rda"
+        "scansnv/{sample}/{type}_genotypes.{chr}.rda"
     params:
         sc_sample="{sample}"
     resources:
         mem=8000
     benchmark:
-        "scansnv/{sample}/benchmark_{type}_genotypes.chr{chr}.tsv"
+        "scansnv/{sample}/benchmark_{type}_genotypes.{chr}.tsv"
     shell:
         "{config[scripts]}/genotype.R"
         "   {input.mmq60} {input.mmq1}"
@@ -730,7 +762,7 @@ rule scansnv_genotype_scatter:
 rule scansnv_genotype_gather:
     input:
         lambda wildcards:
-            expand("scansnv/{sample}/somatic_genotypes.chr{chr}.rda",
+            expand("scansnv/{sample}/somatic_genotypes.{chr}.rda",
                 sample=wildcards.sample, chr=config['chrs'])
     output:
         "scansnv/{sample}/somatic_genotypes.rda"

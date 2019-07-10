@@ -2,6 +2,7 @@
 # vim: set syntax=python
 # This is a wrapper script for executing Snakemake on the SCAN-SNV Snakefile.
 
+import glob
 import subprocess
 import argparse
 import os.path
@@ -61,6 +62,21 @@ def check_shapeit(shapeit_panel):
 
 
 
+def eagle_panel_files(path, chrs):
+    files = {}
+    for s in chrs:
+        f = glob.glob(os.path.join(path, 'ALL.{0}[\._]*.bcf'.format(s)))[0]
+        files[s] = f
+    return files
+
+
+
+def check_eagle(eagle_panel, chrs):
+        for f in eagle_panel_files(eagle_panel, chrs).values():
+            readable_file(f)
+
+
+
 def check_bams(sblist):
     samples = []
     bams = []
@@ -108,7 +124,7 @@ def make_yaml(args, samples, bams, chrs, regions):
     """Assumes reasonable checking has been performed on arguments and files.
        Returns a string containing the full YAML configuration file necessary
        for running Snakemake."""
-    return '\n'.join(
+    yaml = '\n'.join(
         [ 'bams:' ] +
         [ '  {0}: {1}'.format(s, b) for s, b in zip(samples, bams) ] +
         [ 'sc_samples:' ] +
@@ -117,7 +133,6 @@ def make_yaml(args, samples, bams, chrs, regions):
         'bulk_sample: ' + args.bulk_sample,
         'humref: ' + args.ref,
         'dbsnp: ' + args.dbsnp,
-        'shapeit_refpanel: ' + args.shapeit_panel,
         'abmodel_chunks: ' + str(args.abmodel_chunks),
         'abmodel_samples_per_chunk: ' + str(args.abmodel_samples_per_chunk),
         'abmodel_hsnp_chunksize: ' + str(args.abmodel_hsnp_chunk_size),
@@ -129,6 +144,7 @@ def make_yaml(args, samples, bams, chrs, regions):
         'spikein_replicates: ' + str(args.hsnp_spikein_replicates),
         'hsnp_spikein_size: ' + str(args.hsnp_spikein_replicate_size),
         'hsnp_spikein_nsamples: ' + str(args.hsnp_spikein_replicates * args.hsnp_spikein_replicate_size),
+        'phaser: ' + args.phaser,
         'gatk_chunks: ' + str(len(regions)),
         'gatk_regions: '
         ] +
@@ -139,9 +155,20 @@ def make_yaml(args, samples, bams, chrs, regions):
         [ '  - ' + c for c in chrs ] +
         [ 
         'scripts: ' + args.scripts
-        ] +
-        [ '' ]
+        ]
     )
+
+    # assumes args.phaser was already checked for validity
+    if args.phaser == 'eagle':
+        yaml = '\n'.join([ yaml,
+            'eagle_refpanel:' ] +
+            [ ' {0}: {1}'.format(k, v) for k, v in
+                eagle_panel_files(args.eagle_panel, chrs).items() ] +
+            [ 'eagle_genmap: ' + args.eagle_genmap ])
+    else:
+        yaml = '\n'.join([ yaml, 'shapeit_refpanel: ' + args.shapeit_panel ])
+
+    return yaml
 
 
 
@@ -172,8 +199,6 @@ req.add_argument('--ref', type=readable_file, metavar='PATH', required=True,
     help='Path to reference genome FASTA file.  As required by GATK, two additional files must be present: an index (.fai) and a dictionary (.dict).')
 req.add_argument('--dbsnp', type=readable_file, metavar='PATH', required=True,
     help='Path to an indexed dbSNP VCF.')
-req.add_argument('--shapeit-panel', metavar='DIR', required=True,
-    help='Path to the 1000 genomes project phase 3 SHAPEIT panel.  At this time, other phasing panels are not supported.')
 req.add_argument('--output-dir', metavar='DIR', required=True,
     help='Write all output files to DIR.')
 
@@ -201,6 +226,17 @@ gatk.add_argument('--regions-file', metavar='PATH', default=None,
 #gatk.add_argument('--gatk-window-size', default=10000000, type=int, metavar='INT',
 #    help='Split the genome into windows no larger than INT basepairs.  Run GATK on each window in parallel.  On a system with many cores or a cluster, decreasing the window size will speed up the initial GATK step.  Because windows are interrupted at chromosome boundaries, one window per chromosome may be much smaller than INT.  REQUIRES BEDTOOLS.  Cannot be specified in conjunction with --regions.')
 
+
+phasing = ap.add_argument_group('Phasing options',
+    'Choose SHAPEIT2 or Eagle for phasing')
+phasing.add_argument('--phaser', metavar='eagle|shapeit', type=str, default='eagle',
+    help='SHAPEIT2 does not provide a reference panel aligned to hg38. If your data are aligned to this genome version, please use Eagle instead.')
+phasing.add_argument('--shapeit-panel', metavar='DIR',
+    help='Path to the 1000 genomes project phase 3 SHAPEIT panel.  At this time, other phasing panels are not supported. This panel is required if phaser=shapeit')
+phasing.add_argument('--eagle-panel', metavar='DIR',
+    help='Path to the an Eagle compatible phasing panel. The reference panel is a set of BCF files, one per chromosome. File names must match the pattern ALL.chr${chromosome}*.bcf. This parameter is required if phaser=eagle.')
+phasing.add_argument('--eagle-genmap', metavar='DIR',
+    help='Path to Eagle\'s provided genetic map (can be found under the "tables" directory in the Eagle tarball). This is required if phaser=eagle.')
 
 
 caller = ap.add_argument_group("Somatic SNV calling parameters. A minimum requirement of 2 reads supporting a putative mutation is probably good practice at most sequencing depths.  However, the minimum total depth for single cell and bulk may need to be altered.  The defaults of 6 and 11, respectively, were successful on single cells with >25x and bulk with >30x mean coverage.")
@@ -258,8 +294,7 @@ check_refgenome(args.ref)
 
 check_dbsnp(args.dbsnp)
 
-args.shapeit_panel = os.path.abspath(args.shapeit_panel)
-check_shapeit(args.shapeit_panel)
+
 
 (samples, bams) = check_bams(args.bam)
 for sc in args.sc_sample:
@@ -269,6 +304,26 @@ if not args.bulk_sample in samples:
     error("bulk sample {0} is not associated with a BAM file.".format(args.bulk_sample))
 
 (chrs, regions) = check_regions(args)
+
+
+args.phaser = args.phaser.lower()
+if args.phaser == 'shapeit':
+    args.shapeit_panel = os.path.abspath(args.shapeit_panel)
+    check_shapeit(args.shapeit_panel)
+elif args.phaser == 'eagle':
+    if args.eagle_panel is None:
+        print("ERROR: --eagle-panel must be specified when --phaser=eagle")
+        exit(1)
+    if args.eagle_genmap is None:
+        print("ERROR: --eagle-genmap must be specified when --phaser=eagle")
+        exit(1)
+    args.eagle_panel = os.path.abspath(args.eagle_panel)
+    args.eagle_genmap = readable_file(args.eagle_genmap)
+    check_eagle(args.eagle_panel, chrs)
+else:
+    print("ERROR: --phaser must be either 'shapeit' or 'eagle'\n")
+    exit(1)
+
 
 if args.configfile is not None:
     configfile = args.configfile
