@@ -64,7 +64,7 @@ rule gatk_scatter:
     params:
         bamlist=expand("-I {bam}", bam=config['bams'].values()),
         regionflag=lambda wildcards:
-            "-L " + config['gatk_regions'][int(wildcards.gatk_chunk) - 1],
+            "-L " + str(config['gatk_regions'][int(wildcards.gatk_chunk) - 1]),
         mmq="{gatk_mmq}"
     resources:
         mem=5000
