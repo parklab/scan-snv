@@ -292,7 +292,7 @@ snakemake_command = [
     "snakemake",
     "--snakefile",  args.snakefile,
     "--configfile", configfile,
-    "--jobs", args.joblimit,
+    "--jobs", str(args.joblimit),
     "--latency-wait", "60",
     ]
 
