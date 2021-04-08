@@ -1,6 +1,25 @@
-# scan-snv
+# SCAN-SNV
 Somatic genotyper for SNV discovery in whole genome amplified single cells.
 
+# What does SCAN-SNV do?
+SCAN-SNV identifies **somatic** single nucleotide variants (sSNVs) from whole genome amplified single
+cell DNA-seq. SCAN-SNV was designed with multiple displacement amplification (MDA) in mind, but the
+principle should apply to any amplification method that can produce uneven amplification between
+homologous alleles.
+
+All sSNVs identified by SCAN-SNV are assumed to be heterozygous since there is a very low likelihood
+of the same somatic mutation occurring twice at the same location and with the same base change.
+Other mechanisms of generating non-heterozygous somatic mutations exist (i.e., loss of heterozygosity),
+but these are not modelled by SCAN-SNV.
+
+## Does SCAN-SNV genotype germline SNVs?
+No, SCAN-SNV does not call germline SNVs. The SCAN-SNV methodology will refuse to identify any SNV
+for which **any** mutation supporting reads are found in the (required) matched bulk sample. If deeply
+sequenced (i.e., ~30X or greater) bulk data is used, virtually all germline mutations will have at
+least one supporting read and thus will not be called.
+
+The SCAN-SNV allele balance model can provide useful information for germline SNV discovery, however
+we currently do not plan to develop this further.
 
 # Installation
 SCAN-SNV is distributed as a conda package. Installation requires the conda
