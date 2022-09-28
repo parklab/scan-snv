@@ -1,6 +1,17 @@
 # SCAN-SNV
 Somatic genotyper for SNV discovery in whole genome amplified single cells.
 
+> **Note**
+>
+> We now recommend users of SCAN-SNV to instead use our new tool [SCAN2](https://github.com/parklab/SCAN2).
+> SCAN2 contains all of the functionality of SCAN-SNV, but is faster and
+> easier to use. SCAN2's VAF-based SNV calls (i.e., calls prior to mutational
+> signature-based rescue with `scan2 rescue`) are produced using nearly the
+> same procedure as SCAN-SNV. SCAN-SNV users should be aware that SCAN2 uses
+> a more stringent calling cutoff by default (`--target-fdr=0.01` in SCAN2
+> vs. 0.1 in SCAN-SNV).
+
+
 # What does SCAN-SNV do?
 SCAN-SNV identifies **somatic** single nucleotide variants (sSNVs) from whole genome amplified single
 cell DNA-seq. SCAN-SNV was designed with multiple displacement amplification (MDA) in mind, but the
